@@ -1,6 +1,10 @@
+import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from database import get_db, init_db
 from models.customer import Customer
@@ -81,3 +85,9 @@ def get_customer(customer_id: str, db: Session = Depends(get_db)):
 @app.get("/api/health", response_model=HealthResponse)
 def health():
     return HealthResponse(status="ok", service="pipeline-service")
+
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
