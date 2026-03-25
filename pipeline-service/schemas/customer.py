@@ -18,7 +18,9 @@ class CustomerResponse(BaseModel):
     address: Optional[str] = None
     date_of_birth: Optional[date] = None
     account_balance: Optional[Decimal] = None
+    platform_created_at: Optional[datetime] = None
     created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
     model_config = {"from_attributes": True}
 

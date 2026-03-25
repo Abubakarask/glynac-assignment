@@ -50,15 +50,15 @@ def fetch_all_customers_from_flask() -> list[dict]:
 def parse_customer(raw: dict) -> dict:
     """Parse raw dict from Flask into DB-ready values."""
     return {
-        "customer_id":     raw["customer_id"],
-        "first_name":      raw["first_name"],
-        "last_name":       raw["last_name"],
-        "email":           raw["email"],
-        "phone":           raw.get("phone"),
-        "address":         raw.get("address"),
-        "date_of_birth":   raw.get("date_of_birth"),   # string, Postgres handles cast
-        "account_balance": raw.get("account_balance"),
-        "created_at":      raw.get("created_at"),       # string, Postgres handles cast
+        "customer_id":        raw["customer_id"],
+        "first_name":         raw["first_name"],
+        "last_name":          raw["last_name"],
+        "email":              raw["email"],
+        "phone":              raw.get("phone"),
+        "address":            raw.get("address"),
+        "date_of_birth":      raw.get("date_of_birth"),
+        "account_balance":    raw.get("account_balance"),
+        "platform_created_at": raw.get("created_at"),
     }
 
 
@@ -78,14 +78,14 @@ def upsert_customers(db: Session, customers: list[dict]) -> int:
     stmt = stmt.on_conflict_do_update(
         index_elements=["customer_id"],
         set_={
-            "first_name":      stmt.excluded.first_name,
-            "last_name":       stmt.excluded.last_name,
-            "email":           stmt.excluded.email,
-            "phone":           stmt.excluded.phone,
-            "address":         stmt.excluded.address,
-            "date_of_birth":   stmt.excluded.date_of_birth,
-            "account_balance": stmt.excluded.account_balance,
-            "created_at":      stmt.excluded.created_at,
+            "first_name":         stmt.excluded.first_name,
+            "last_name":          stmt.excluded.last_name,
+            "email":              stmt.excluded.email,
+            "phone":              stmt.excluded.phone,
+            "address":            stmt.excluded.address,
+            "date_of_birth":      stmt.excluded.date_of_birth,
+            "account_balance":    stmt.excluded.account_balance,
+            "platform_created_at": stmt.excluded.platform_created_at,
         }
     )
 
