@@ -1,13 +1,12 @@
 import os
 import requests
-from datetime import datetime
+import dlt
 from sqlalchemy.orm import Session
-from sqlalchemy.dialects.postgresql import insert
+from datetime import date, datetime
 
-from models.customer import Customer
-
-FLASK_BASE_URL = os.getenv("FLASK_URL", "http://localhost:5000")
+FLASK_BASE_URL = os.getenv("FLASK_BASE_URL", "http://mock-server:5000")
 EXCHANGE_TOKEN = os.getenv("EXCHANGE_TOKEN", "")
+DATABASE_URL   = os.getenv("DATABASE_URL", "")
 
 
 def get_auth_headers() -> dict:
@@ -15,88 +14,116 @@ def get_auth_headers() -> dict:
     return {"Authorization": f"Bearer {EXCHANGE_TOKEN}"}
 
 
-def fetch_all_customers_from_flask() -> list[dict]:
+# ─── dlt resource ─────────────────────────────────────────────────────────────
+
+@dlt.resource(
+    name="customers",
+    write_disposition="merge",   # upsert — insert if new, update if exists
+    primary_key="customer_id",
+)
+def customers_resource():
     """
-    Fetches all customers from Flask, handling pagination automatically.
-    Keeps requesting pages until all records are collected.
+    dlt resource that fetches all customers from Flask, page by page.
+    Yields each page of records — dlt handles loading them into Postgres.
     """
-    all_customers = []
-    page = 1
+    page  = 1
     limit = 10
 
     while True:
         response = requests.get(
             f"{FLASK_BASE_URL}/api/customers",
             params={"page": page, "limit": limit},
-            headers=get_auth_headers()
+            headers=get_auth_headers(),
         )
         response.raise_for_status()
         payload = response.json()
 
-        data = payload.get("data", [])
-        all_customers.extend(data)
-
+        data  = payload.get("data", [])
         total = payload.get("total", 0)
 
-        # Stop when we've fetched everything
-        if len(all_customers) >= total or len(data) == 0:
+        if not data:
+            break
+
+        yield data   # dlt receives this page and loads it
+
+        # Stop once we've covered all records
+        if page * limit >= total:
             break
 
         page += 1
 
-    return all_customers
 
-
-def parse_customer(raw: dict) -> dict:
-    """Parse raw dict from Flask into DB-ready values."""
-    return {
-        "customer_id":        raw["customer_id"],
-        "first_name":         raw["first_name"],
-        "last_name":          raw["last_name"],
-        "email":              raw["email"],
-        "phone":              raw.get("phone"),
-        "address":            raw.get("address"),
-        "date_of_birth":      raw.get("date_of_birth"),
-        "account_balance":    raw.get("account_balance"),
-        "platform_created_at": raw.get("created_at"),
-    }
-
-
-def upsert_customers(db: Session, customers: list[dict]) -> int:
-    """
-    Upsert customers into PostgreSQL.
-    INSERT ... ON CONFLICT (customer_id) DO UPDATE
-    """
-    if not customers:
-        return 0
-
-    parsed = [parse_customer(c) for c in customers]
-
-    stmt = insert(Customer).values(parsed)
-
-    # On conflict (same customer_id), update all other fields
-    stmt = stmt.on_conflict_do_update(
-        index_elements=["customer_id"],
-        set_={
-            "first_name":         stmt.excluded.first_name,
-            "last_name":          stmt.excluded.last_name,
-            "email":              stmt.excluded.email,
-            "phone":              stmt.excluded.phone,
-            "address":            stmt.excluded.address,
-            "date_of_birth":      stmt.excluded.date_of_birth,
-            "account_balance":    stmt.excluded.account_balance,
-            "platform_created_at": stmt.excluded.platform_created_at,
-        }
-    )
-
-    db.execute(stmt)
-    db.commit()
-
-    return len(parsed)
-
+# ─── dlt pipeline ─────────────────────────────────────────────────────────────
 
 def run_ingestion(db: Session) -> int:
-    """Full ingestion pipeline: fetch from Flask → upsert to DB."""
-    customers = fetch_all_customers_from_flask()
-    records_processed = upsert_customers(db, customers)
-    return records_processed
+    """
+    Runs the dlt pipeline:
+      1. customers_resource() fetches from Flask (auto-paginated)
+      2. dlt loads into PostgreSQL using merge (upsert) on customer_id
+      3. Returns total records processed
+    """
+    pipeline = dlt.pipeline(
+        pipeline_name="customer_pipeline",
+        destination=dlt.destinations.postgres(DATABASE_URL),
+        dataset_name="public",       # uses the public schema in customer_db
+    )
+
+    # Fetch all first so we can return the count
+    all_customers = []
+    page  = 1
+    limit = 10
+
+    while True:
+        response = requests.get(
+            f"{FLASK_BASE_URL}/api/customers",
+            params={"page": page, "limit": limit},
+            headers=get_auth_headers(),
+        )
+        response.raise_for_status()
+        payload = response.json()
+
+        data  = payload.get("data", [])
+        total = payload.get("total", 0)
+
+        if not data:
+            break
+
+        all_customers.extend(data)
+
+        if page * limit >= total:
+            break
+
+        page += 1
+
+    # Process data types before loading
+    for customer in all_customers:
+        if "account_balance" in customer and isinstance(customer["account_balance"], str):
+            try:
+                customer["account_balance"] = float(customer["account_balance"])
+            except ValueError:
+                customer["account_balance"] = None # Handle conversion errors as needed
+
+        if "date_of_birth" in customer and isinstance(customer["date_of_birth"], str):
+            try:
+                customer["date_of_birth"] = date.fromisoformat(customer["date_of_birth"])
+            except ValueError:
+                customer["date_of_birth"] = None
+
+        if "created_at" in customer and isinstance(customer["created_at"], str):
+            try:
+                # Handle 'Z' for UTC timezone
+                customer["created_at"] = datetime.fromisoformat(customer["created_at"].replace('Z', '+00:00'))
+            except ValueError:
+                customer["created_at"] = None
+
+    # Run dlt pipeline with collected data
+    # Type coercion above (float, date, datetime) ensures dlt infers correct
+    # column types and avoids the varchar vs numeric mismatch in Postgres.
+    pipeline.run(
+        all_customers,
+        table_name="customers",
+        write_disposition="merge",
+        primary_key="customer_id",
+    )
+
+    return len(all_customers)
